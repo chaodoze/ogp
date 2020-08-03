@@ -1,10 +1,11 @@
 require 'oga'
 require 'ostruct'
 
-REQUIRED_ATTRIBUTES = %w(title type image url).freeze
-
 module OGP
   class OpenGraph
+    # Accessor for storing all open graph data
+    attr_accessor :data
+
     # Required Accessors
     attr_accessor :title, :type, :url
     attr_accessor :images
@@ -24,13 +25,13 @@ module OGP
 
       source.force_encoding('UTF-8') if source.encoding != 'UTF-8'
 
+      self.data = {}
       self.images = []
       self.audios = []
       self.locales = []
       self.videos = []
 
       document = Oga.parse_html(source)
-      check_required_attributes(document)
       parse_attributes(document)
     end
 
@@ -41,16 +42,25 @@ module OGP
 
   private
 
-    def check_required_attributes(document)
-      REQUIRED_ATTRIBUTES.each do |attribute_name|
-        raise MissingAttributeError, "Missing required attribute: #{attribute_name}" unless attribute_exists(document, attribute_name)
-      end
-    end
-
     # rubocop:disable Metrics/CyclomaticComplexity
     def parse_attributes(document)
       document.xpath('//head/meta[starts-with(@property, \'og:\')]').each do |attribute|
         attribute_name = attribute.get('property').downcase.gsub('og:', '')
+
+        if data.has_key?(attribute_name)
+          # There can be multiple entries for the same og tag, see
+          # https://open.spotify.com/album/3NkIlQR6wZwPCQiP1vPjF8 for an example
+          # where there are multiple `restrictions:country:allowed` og tags.
+          #
+          # In this case store the content values as an array.
+          if !data[attribute_name].kind_of?(Array)
+            data[attribute_name] = [ data[attribute_name] ]
+          end
+          data[attribute_name] << attribute.get('content')
+        else
+          data[attribute_name] = attribute.get('content')
+        end
+
         case attribute_name
           when /^image$/i
             images << OpenStruct.new(url: attribute.get('content').to_s)
@@ -70,7 +80,15 @@ module OGP
             videos << OpenStruct.new unless videos.last
             videos.last[Regexp.last_match[1].gsub('-', '_')] = attribute.get('content').to_s
           else
-            instance_variable_set("@#{attribute_name}", attribute.get('content'))
+            begin
+              instance_variable_set("@#{attribute_name}", attribute.get('content'))
+            rescue NameError
+              warn("Some og tag names include colons `:`, such as Spotify song
+              pages (`restrictions:country:allowed`), which will result in a
+              NameError. Please rely on data[attribute_name] instead. Setting
+              top-level instance variables is deprecated and will be removed in
+              the next major version.")
+            end
         end
       end
     end
